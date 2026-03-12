@@ -18,10 +18,11 @@ const MAX_LINE_LENGTH: usize = 1024;
 
 pub fn parse_cfg(cfg: AttestationConfig) -> Result<VmInstanceRotMock> {
     let uuid = uuid::Uuid::parse_str(&cfg.instance_uuid).expect("Invalid UUID");
-    let measurement: Measurement =
-        serde_json::from_value(serde_json::json!({"sha-256": cfg.boot_digest}))
-            .context("boot_digest must be a valid hex SHA-256 digest")?;
-    let vm_conf = VmInstanceConf { uuid, image_digest: Some(measurement) };
+    let boot_digest: Measurement = cfg
+        .boot_digest
+        .parse()
+        .context("boot_digest to vm_attest::Measurement")?;
+    let vm_conf = VmInstanceConf { uuid, image_digest: Some(boot_digest) };
 
     let ox_attest: Box<dyn dice_verifier::Attest> = match cfg.backend {
         AttestationBackend::Mock => {
