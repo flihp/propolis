@@ -9297,7 +9297,7 @@ dependencies = [
 [[package]]
 name = "vm-attest"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/vm-attest#946a325849baa2778c1e10e72fe4957bf2f536a4"
+source = "git+https://github.com/flihp/vm-attest?branch=measurement-nih-str#6abe3d61a298efa01e6ff301e22074abee93f13a"
 dependencies = [
  "anyhow",
  "attest-data",
@@ -9310,6 +9310,7 @@ dependencies = [
  "ed25519-dalek",
  "env_logger",
  "getrandom 0.3.4",
+ "hex",
  "hubpack",
  "libc",
  "log",
