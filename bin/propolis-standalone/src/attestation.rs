@@ -8,21 +8,20 @@ use std::net::TcpListener;
 
 use dice_verifier::ipcc::AttestIpcc;
 use dice_verifier::AttestMock;
-use vm_attest::mock::VmInstanceRotMock;
 use vm_attest::{Measurement, VmInstanceConf};
-use vm_attest::{Request, Response, VmInstanceRot};
+use vm_attest::{Request, Response, VmInstanceAttester, VmInstanceRot};
 
 use crate::config::{AttestationBackend, AttestationConfig};
 
 const MAX_LINE_LENGTH: usize = 1024;
 
-pub fn parse_cfg(cfg: AttestationConfig) -> Result<VmInstanceRotMock> {
+pub fn parse_cfg(cfg: AttestationConfig) -> Result<VmInstanceRot> {
     let uuid = uuid::Uuid::parse_str(&cfg.instance_uuid).expect("Invalid UUID");
     let boot_digest: Measurement = cfg
         .boot_digest
         .parse()
         .context("boot_digest to vm_attest::Measurement")?;
-    let vm_conf = VmInstanceConf { uuid, image_digest: Some(boot_digest) };
+    let vm_conf = VmInstanceConf { uuid, boot_digest: Some(boot_digest) };
 
     let ox_attest: Box<dyn dice_verifier::Attest> = match cfg.backend {
         AttestationBackend::Mock => {
@@ -48,12 +47,12 @@ pub fn parse_cfg(cfg: AttestationConfig) -> Result<VmInstanceRotMock> {
         }
     };
 
-    Ok(VmInstanceRotMock::new(ox_attest, vm_conf))
+    Ok(VmInstanceRot::new(ox_attest, vm_conf))
 }
 
 pub fn run_server(
     log: &slog::Logger,
-    rot: VmInstanceRotMock,
+    rot: VmInstanceRot,
     listener: TcpListener,
 ) -> Result<()> {
     let mut msg = String::new();
