@@ -6187,6 +6187,7 @@ dependencies = [
  "erased-serde 0.4.5",
  "fatfs",
  "futures",
+ "iddqd",
  "libc",
  "oxide-tokio-rt",
  "pbind",

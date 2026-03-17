@@ -16,6 +16,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Context;
 use clap::Parser;
 use futures::future::BoxFuture;
+use iddqd::IdHashMap;
 use propolis::hw::qemu::pvpanic::QemuPvpanic;
 use propolis_types::{CpuidIdent, CpuidValues, CpuidVendor};
 use slog::{o, Drain};
@@ -34,6 +35,7 @@ use propolis::intr_pins::FuncPin;
 use propolis::usdt::register_probes;
 use propolis::vcpu::Vcpu;
 use propolis::vmm::{Builder, Machine};
+use propolis::vsock::proxy::VsockPortMapping;
 use propolis::*;
 
 mod attestation;
@@ -1523,11 +1525,13 @@ fn main() -> anyhow::Result<ExitCode> {
     propolis::common::DISPLAY_GUEST_DATA
         .store(true, std::sync::atomic::Ordering::SeqCst);
 
+    slog::debug!(log, "before config::parse");
     // Load/parse the config first, since it's required to size the tokio runtime
     // used to run the instance.
     let config = if restore {
         snapshot::restore_config(&target)
     } else {
+        slog::debug!(log, "config::parse");
         config::parse(&target)
     }?;
 
@@ -1542,6 +1546,26 @@ fn main() -> anyhow::Result<ExitCode> {
     };
     let _rt_guard = rt.enter();
 
+    // search through devices for one bound to the vsock driver
+    // NOTE: this will find the first such device, all others are ignored
+    let (_, device) = config
+        .devices
+        .iter()
+        .find(|&(_, device)| device.driver == "pci-virtio-vsock")
+        .ok_or(anyhow::anyhow!("could not find 'pci-virtio-vsock' device"))?;
+    let vsock_device = config::VsockDevice::from_opts(&device.options)
+        .context("deserialize VsockDevice from device.options")?;
+    let port_mappings: IdHashMap<VsockPortMapping> =
+        vsock_device.port_mappings.into_iter().collect();
+    slog::debug!(log, "attest_mapping: {port_mappings:?}");
+
+    let attest_bind_addr = port_mappings
+        .get(&config::ATTEST_PORT)
+        .context(format!("get port mapping for port {}", config::ATTEST_PORT))?
+        .addr()
+        .clone();
+    slog::info!(log, "bind address for attestation server: {attest_bind_addr}");
+
     // If configured, setup an attestation server
     if config.attestation.is_some() {
         let attest_log = log.clone();
@@ -1552,13 +1576,12 @@ fn main() -> anyhow::Result<ExitCode> {
             let rot_backend = attestation::parse_cfg(attest_cfg)
                 .expect("invalid attestation server config");
 
-            // TODO: get from port mappings
-            let listener = TcpListener::bind("127.0.0.1:3000")
+            let listener = TcpListener::bind(attest_bind_addr)
                 .expect("could not bind to attesation port");
 
             slog::info!(
                 attest_log,
-                "starting attestation server, listening on port 3000"
+                "starting attestation server, listening on port: {attest_bind_addr}"
             );
 
             let _ = attestation::run_server(&attest_log, rot_backend, listener);

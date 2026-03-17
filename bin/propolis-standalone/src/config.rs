@@ -22,6 +22,8 @@ use propolis::hw::pci::Bdf;
 
 use crate::cidata::build_cidata_be;
 
+pub const ATTEST_PORT: u32 = 605;
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Config {
     pub main: Main,
@@ -144,7 +146,6 @@ pub enum AttestationBackend {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AttestationConfig {
     pub backend: AttestationBackend,
-    pub port: u16,
 
     // qualifying data: minimal for now
     pub instance_uuid: String,
@@ -195,7 +196,7 @@ impl VionaDeviceParams {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct VsockDevice {
     pub guest_cid: u32,
     pub port_mappings: Vec<VsockPortMapping>,
