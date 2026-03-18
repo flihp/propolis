@@ -22,8 +22,6 @@ use propolis::hw::pci::Bdf;
 
 use crate::cidata::build_cidata_be;
 
-pub const ATTEST_PORT: u32 = 605;
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Config {
     pub main: Main,

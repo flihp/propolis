@@ -3,20 +3,37 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use anyhow::{Context, Result};
+use iddqd::IdHashMap;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpListener;
+use std::net::{SocketAddr, TcpListener};
 
 use dice_verifier::ipcc::AttestIpcc;
 use dice_verifier::AttestMock;
 use vm_attest::{Measurement, VmInstanceConf};
 use vm_attest::{Request, Response, VmInstanceAttester, VmInstanceRot};
 
-use crate::config::{AttestationBackend, AttestationConfig};
+use crate::config::{AttestationBackend, AttestationConfig, VsockDevice};
+use propolis::vsock::proxy::VsockPortMapping;
 
 const MAX_LINE_LENGTH: usize = 1024;
+const ATTEST_PORT: u32 = 605;
+
+pub fn get_sockaddr_from_vsock_mapping(
+    device: &VsockDevice,
+) -> Result<SocketAddr> {
+    let port_mappings: IdHashMap<&VsockPortMapping> =
+        device.port_mappings.iter().collect();
+
+    Ok(port_mappings
+        .get(&ATTEST_PORT)
+        .with_context(|| format!("get port mapping for port {ATTEST_PORT}"))?
+        .addr()
+        .clone())
+}
 
 pub fn parse_cfg(cfg: AttestationConfig) -> Result<VmInstanceRot> {
-    let uuid = uuid::Uuid::parse_str(&cfg.instance_uuid).expect("Invalid UUID");
+    let uuid = uuid::Uuid::parse_str(&cfg.instance_uuid)
+        .context("Parse UUID string")?;
     let boot_digest: Measurement = cfg
         .boot_digest
         .parse()
@@ -28,22 +45,22 @@ pub fn parse_cfg(cfg: AttestationConfig) -> Result<VmInstanceRot> {
             let pki_path = cfg
                 .pki_path
                 .as_ref()
-                .expect("pki_path required for mock backend");
+                .context("pki_path required for mock backend")?;
             let log_path = cfg
                 .log_path
                 .as_ref()
-                .expect("log_path required for mock backend");
+                .context("log_path required for mock backend")?;
             let alias_key_path = cfg
                 .alias_key_path
                 .as_ref()
-                .expect("alias_key_path required for mock backend");
+                .context("alias_key_path required for mock backend")?;
             Box::new(
                 AttestMock::load(pki_path, log_path, alias_key_path)
-                    .expect("Failed to load AttestMock"),
+                    .context("AttestMock load artifacts")?,
             )
         }
         AttestationBackend::Ipcc => {
-            Box::new(AttestIpcc::new().expect("Failed to create AttestIpcc"))
+            Box::new(AttestIpcc::new().context("Create AttestIpcc")?)
         }
     };
 
