@@ -1546,6 +1546,20 @@ fn main() -> anyhow::Result<ExitCode> {
 
     // If configured, setup an attestation server
     if config.attestation.is_some() {
+        // search through devices for a block backend
+        // TODO: we currently find *a* block backend, but will the instance
+        // boot from it?
+        let (_, device) = config
+            .devices
+            .iter()
+            .find(|&(_, device)| device.driver == "pci-virtio-block")
+            .ok_or(anyhow::anyhow!(
+                "could not find 'pci-virtio-block device"
+            ))?;
+        let backend_path =
+            attestation::get_path_for_block_device(&config, &device, &log)
+                .context("get device to digest")?;
+
         // search through devices for one bound to the vsock driver
         // NOTE: this will find the first such device, all others are ignored
         let (_, device) = config

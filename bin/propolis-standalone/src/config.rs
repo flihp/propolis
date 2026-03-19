@@ -155,10 +155,10 @@ pub struct AttestationConfig {
     pub alias_key_path: Option<String>,
 }
 
-#[derive(Deserialize)]
-struct FileConfig {
-    path: String,
-    workers: Option<NonZeroUsize>,
+#[derive(Debug, Deserialize)]
+pub struct FileConfig {
+    pub path: String,
+    pub workers: Option<NonZeroUsize>,
 }
 #[derive(Deserialize)]
 struct MemAsyncConfig {

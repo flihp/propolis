@@ -2,17 +2,22 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use iddqd::IdHashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener};
+use std::path::PathBuf;
+use toml::map::Map;
 
 use dice_verifier::ipcc::AttestIpcc;
 use dice_verifier::AttestMock;
 use vm_attest::{Measurement, VmInstanceConf};
 use vm_attest::{Request, Response, VmInstanceAttester, VmInstanceRot};
 
-use crate::config::{AttestationBackend, AttestationConfig, VsockDevice};
+use crate::config::{
+    AttestationBackend, AttestationConfig, Config, Device, FileConfig,
+    VsockDevice,
+};
 use propolis::vsock::proxy::VsockPortMapping;
 
 const MAX_LINE_LENGTH: usize = 1024;
@@ -29,6 +34,36 @@ pub fn get_sockaddr_from_vsock_mapping(
         .with_context(|| format!("get port mapping for port {ATTEST_PORT}"))?
         .addr()
         .clone())
+}
+
+pub fn get_path_for_block_device(
+    config: &Config,
+    dev: &Device,
+    log: &slog::Logger,
+) -> Result<PathBuf> {
+    slog::info!(log, "get_file_path_for_block_device");
+    let backend_name = dev
+        .options
+        .get("block_dev")
+        .ok_or(anyhow!("no `block_dev` found for block device"))?
+        .as_str()
+        .ok_or(anyhow!("`block_dev` field in block device is not a string"))?;
+
+    let be = config
+        .block_devs
+        .get(backend_name)
+        .ok_or(anyhow!("No block device named \"{backend_name}\""))?;
+
+    match &be.bdtype as &str {
+        "file" => {
+            let map = Map::from_iter(be.options.clone());
+            let config: FileConfig =
+                map.try_into().context("map backend options to FileConfig")?;
+            slog::info!(log, "FileConfig: {config:?}");
+            Ok(PathBuf::from(config.path))
+        }
+        _ => todo!("handle non-file backends: crucible?"),
+    }
 }
 
 pub fn parse_cfg(cfg: AttestationConfig) -> Result<VmInstanceRot> {
