@@ -91,7 +91,7 @@ pub fn get_path_for_block_device(
     }
 }
 
-pub fn parse_cfg(cfg: AttestationConfig) -> Result<VmInstanceRot> {
+pub fn parse_cfg(cfg: &AttestationConfig) -> Result<VmInstanceRot> {
     let uuid = uuid::Uuid::parse_str(&cfg.instance_uuid)
         .context("Parse UUID string")?;
     let boot_digest: Measurement = cfg
@@ -161,7 +161,7 @@ pub fn run_server(
     rot: VmInstanceRot,
     listener: TcpListener,
 ) -> Result<()> {
-    slog::info!(log, "attestation::run_server");
+    slog::info!(log, "starting attestation server, bound to: {listener:?}");
 
     let mut msg = String::new();
     for client in listener.incoming() {

@@ -1583,21 +1583,15 @@ fn main() -> anyhow::Result<ExitCode> {
         );
 
         let attest_log = log.clone();
-        let attest_cfg = config.attestation.clone().unwrap();
+
+        let rot_backend =
+            attestation::parse_cfg(config.attestation.as_ref().unwrap())
+                .context("create VmInstanceRot from cfg")?;
+
+        let listener = TcpListener::bind(attest_bind_addr)
+            .context("bind to could not bind to attesation port")?;
+
         std::thread::spawn(move || {
-            //let port = config.attestation.port;
-            // TODO: move validation out of the thread?
-            let rot_backend = attestation::parse_cfg(attest_cfg)
-                .expect("invalid attestation server config");
-
-            let listener = TcpListener::bind(attest_bind_addr)
-                .expect("could not bind to attesation port");
-
-            slog::info!(
-                attest_log,
-                "starting attestation server, listening on port: {attest_bind_addr}"
-            );
-
             let _ = attestation::run_server(&attest_log, rot_backend, listener);
         });
     }
