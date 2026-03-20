@@ -4,6 +4,8 @@
 
 use anyhow::{anyhow, Context, Result};
 use iddqd::IdHashMap;
+use sha2::{Digest, Sha256};
+use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
@@ -15,8 +17,7 @@ use vm_attest::{Measurement, VmInstanceConf};
 use vm_attest::{Request, Response, VmInstanceAttester, VmInstanceRot};
 
 use crate::config::{
-    AttestationBackend, AttestationConfig, Config, Device, FileConfig,
-    VsockDevice,
+    AttestationBackend, AttestationConfig, Config, FileConfig, VsockDevice,
 };
 use propolis::vsock::proxy::VsockPortMapping;
 
@@ -37,30 +38,54 @@ pub fn get_sockaddr_from_vsock_mapping(
 }
 
 pub fn get_path_for_block_device(
-    config: &Config,
-    dev: &Device,
+    cfg: &Config,
     log: &slog::Logger,
 ) -> Result<PathBuf> {
     slog::info!(log, "get_file_path_for_block_device");
-    let backend_name = dev
+
+    slog::debug!(log, "boot_order: {:?}", cfg.main.boot_order);
+
+    // TODO: handle default boot order (somehow?)
+    let boot_order = cfg
+        .main
+        .boot_order
+        .as_ref()
+        .ok_or(anyhow!("must specify boot order to calculate boot disk"))?;
+
+    slog::debug!(log, "boot_order: {boot_order:?}");
+
+    assert!(
+        boot_order.len() > 0,
+        "must specify at least one disk in `boot_order`"
+    );
+
+    slog::info!(log, "after assert");
+
+    let boot_devname = boot_order[0].clone();
+    let boot_dev = cfg
+        .devices
+        .get(&boot_devname)
+        .ok_or(anyhow!("could not find boot device {boot_devname}"))?;
+    let backend_name = boot_dev
         .options
         .get("block_dev")
-        .ok_or(anyhow!("no `block_dev` found for block device"))?
+        .ok_or(anyhow!("couldn't find block_dev for boot disk"))?
         .as_str()
-        .ok_or(anyhow!("`block_dev` field in block device is not a string"))?;
-
-    let be = config
+        .ok_or(anyhow!(
+            "block_dev for boot device \"{boot_devname}\" is not a string"
+        ))?;
+    let backend = cfg
         .block_devs
         .get(backend_name)
-        .ok_or(anyhow!("No block device named \"{backend_name}\""))?;
+        .ok_or(anyhow!("block_dev {backend_name} not found in cfg"))?;
 
-    match &be.bdtype as &str {
+    match &backend.bdtype as &str {
         "file" => {
-            let map = Map::from_iter(be.options.clone());
-            let config: FileConfig =
+            let map = Map::from_iter(backend.options.clone());
+            let file_cfg: FileConfig =
                 map.try_into().context("map backend options to FileConfig")?;
-            slog::info!(log, "FileConfig: {config:?}");
-            Ok(PathBuf::from(config.path))
+            slog::debug!(log, "FileConfig: {file_cfg:?}");
+            Ok(PathBuf::from(file_cfg.path))
         }
         _ => todo!("handle non-file backends: crucible?"),
     }
@@ -102,11 +127,42 @@ pub fn parse_cfg(cfg: AttestationConfig) -> Result<VmInstanceRot> {
     Ok(VmInstanceRot::new(ox_attest, vm_conf))
 }
 
+// TODO: size this appropriately
+const DIGEST_READER_BUF_SIZE: usize = 1024 * 1024 * 100;
+
+pub fn calc_boot_digest(
+    boot_disk: &PathBuf,
+    log: &slog::Logger,
+) -> Result<String> {
+    slog::info!(&log, "calc boot digest for path: {}", boot_disk.display());
+    let file = File::open(&boot_disk).context("open boot_disk image file")?;
+    let mut digest = Sha256::new();
+    // TODO: BufReader is probably unnecessary / overkill
+    let mut reader = BufReader::with_capacity(DIGEST_READER_BUF_SIZE, file);
+
+    loop {
+        let buf = reader.fill_buf().context("read next boot_disk block")?;
+        let byte_count = buf.len();
+
+        if byte_count != 0 {
+            slog::debug!(log, "bytes read from boot_disk: {byte_count}");
+            digest.update(&buf[..byte_count]);
+            reader.consume(byte_count);
+        } else {
+            break;
+        }
+    }
+
+    Ok(format!("{:x}", digest.finalize()))
+}
+
 pub fn run_server(
     log: &slog::Logger,
     rot: VmInstanceRot,
     listener: TcpListener,
 ) -> Result<()> {
+    slog::info!(log, "attestation::run_server");
+
     let mut msg = String::new();
     for client in listener.incoming() {
         slog::info!(log, "new client connected");

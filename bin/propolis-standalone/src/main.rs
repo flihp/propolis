@@ -1533,6 +1533,8 @@ fn main() -> anyhow::Result<ExitCode> {
         config::parse(&target)
     }?;
 
+    slog::debug!(log, "wtf");
+
     // Create tokio runtime, we don't use the tokio::main macro
     // since we'll block in main when we call `Instance::wait_for_state`
     let rt_threads =
@@ -1546,19 +1548,20 @@ fn main() -> anyhow::Result<ExitCode> {
 
     // If configured, setup an attestation server
     if config.attestation.is_some() {
-        // search through devices for a block backend
-        // TODO: we currently find *a* block backend, but will the instance
-        // boot from it?
-        let (_, device) = config
-            .devices
-            .iter()
-            .find(|&(_, device)| device.driver == "pci-virtio-block")
-            .ok_or(anyhow::anyhow!(
-                "could not find 'pci-virtio-block device"
-            ))?;
         let backend_path =
-            attestation::get_path_for_block_device(&config, &device, &log)
+            attestation::get_path_for_block_device(&config, &log)
                 .context("get device to digest")?;
+        slog::info!(log, "boot_disk: {}", backend_path.display());
+
+        // TODO: only calculate digest if mock value isn't present in cfg
+        let digest = attestation::calc_boot_digest(&backend_path, &log)
+            .context("calculating boot disk digest")?;
+
+        slog::info!(
+            log,
+            "booting disk image: {} w/ digest: {digest}",
+            backend_path.display()
+        );
 
         // search through devices for one bound to the vsock driver
         // NOTE: this will find the first such device, all others are ignored
