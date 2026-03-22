@@ -147,7 +147,7 @@ pub struct AttestationConfig {
 
     // qualifying data: minimal for now
     pub instance_uuid: String,
-    pub boot_digest: String,
+    pub boot_digest: Option<String>,
 
     // mock-only fields
     pub pki_path: Option<String>,

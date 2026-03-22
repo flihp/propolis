@@ -8,7 +8,9 @@ use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener};
+use std::ops::Deref;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use toml::map::Map;
 
 use dice_verifier::ipcc::AttestIpcc;
@@ -37,31 +39,30 @@ pub fn get_sockaddr_from_vsock_mapping(
         .clone())
 }
 
-pub fn get_path_for_block_device(
+pub fn get_path_for_boot_device(
     cfg: &Config,
     log: &slog::Logger,
-) -> Result<PathBuf> {
+) -> Result<Option<PathBuf>> {
     slog::info!(log, "get_file_path_for_block_device");
 
     slog::debug!(log, "boot_order: {:?}", cfg.main.boot_order);
 
     // TODO: handle default boot order (somehow?)
-    let boot_order = cfg
-        .main
-        .boot_order
-        .as_ref()
-        .ok_or(anyhow!("must specify boot order to calculate boot disk"))?;
+    let boot_order = match cfg.main.boot_order.as_ref() {
+        Some(b) => b,
+        None => {
+            slog::info!(
+                log,
+                "no boot_order provided: cannot calculate boot disk digest"
+            );
+            return Ok(None);
+        }
+    };
 
     slog::debug!(log, "boot_order: {boot_order:?}");
 
-    assert!(
-        boot_order.len() > 0,
-        "must specify at least one disk in `boot_order`"
-    );
-
-    slog::info!(log, "after assert");
-
     let boot_devname = boot_order[0].clone();
+    slog::debug!(log, "boot device name: {boot_devname}");
     let boot_dev = cfg
         .devices
         .get(&boot_devname)
@@ -85,22 +86,16 @@ pub fn get_path_for_block_device(
             let file_cfg: FileConfig =
                 map.try_into().context("map backend options to FileConfig")?;
             slog::debug!(log, "FileConfig: {file_cfg:?}");
-            Ok(PathBuf::from(file_cfg.path))
+            Ok(Some(PathBuf::from(file_cfg.path)))
         }
         _ => todo!("handle non-file backends: crucible?"),
     }
 }
 
-pub fn parse_cfg(cfg: &AttestationConfig) -> Result<VmInstanceRot> {
-    let uuid = uuid::Uuid::parse_str(&cfg.instance_uuid)
-        .context("Parse UUID string")?;
-    let boot_digest: Measurement = cfg
-        .boot_digest
-        .parse()
-        .context("boot_digest to vm_attest::Measurement")?;
-    let vm_conf = VmInstanceConf { uuid, boot_digest: Some(boot_digest) };
-
-    let ox_attest: Box<dyn dice_verifier::Attest> = match cfg.backend {
+pub fn attest_from_cfg(
+    cfg: &AttestationConfig,
+) -> Result<Box<dyn dice_verifier::Attest + Send>> {
+    Ok(match cfg.backend {
         AttestationBackend::Mock => {
             let pki_path = cfg
                 .pki_path
@@ -122,20 +117,19 @@ pub fn parse_cfg(cfg: &AttestationConfig) -> Result<VmInstanceRot> {
         AttestationBackend::Ipcc => {
             Box::new(AttestIpcc::new().context("Create AttestIpcc")?)
         }
-    };
-
-    Ok(VmInstanceRot::new(ox_attest, vm_conf))
+    })
 }
 
 // TODO: size this appropriately
 const DIGEST_READER_BUF_SIZE: usize = 1024 * 1024 * 100;
 
-pub fn calc_boot_digest(
+pub fn measure_boot_disk(
     boot_disk: &PathBuf,
     log: &slog::Logger,
-) -> Result<String> {
+) -> Result<Measurement> {
     slog::info!(&log, "calc boot digest for path: {}", boot_disk.display());
     let file = File::open(&boot_disk).context("open boot_disk image file")?;
+
     let mut digest = Sha256::new();
     // TODO: BufReader is probably unnecessary / overkill
     let mut reader = BufReader::with_capacity(DIGEST_READER_BUF_SIZE, file);
@@ -153,17 +147,19 @@ pub fn calc_boot_digest(
         }
     }
 
-    Ok(format!("{:x}", digest.finalize()))
+    Ok(Measurement::Sha256(digest.finalize().into()))
 }
 
 pub fn run_server(
     log: &slog::Logger,
-    rot: VmInstanceRot,
+    rot_backend: Box<dyn dice_verifier::Attest + Send>,
     listener: TcpListener,
+    conf: Arc<Mutex<Option<VmInstanceConf>>>,
 ) -> Result<()> {
     slog::info!(log, "starting attestation server, bound to: {listener:?}");
 
     let mut msg = String::new();
+    let rot = VmInstanceRot::new(rot_backend);
     for client in listener.incoming() {
         slog::info!(log, "new client connected");
 
@@ -202,13 +198,13 @@ pub fn run_server(
 
             let result: Result<Request, serde_json::Error> =
                 serde_json::from_str(&msg);
+            // send error response if we fail to deserialize the request
             let request = match result {
                 Ok(q) => q,
                 Err(e) => {
                     let response = Response::Error(e.to_string());
                     let mut response = serde_json::to_string(&response)?;
                     response.push('\n');
-                    slog::info!(log, "sending error response: {response}");
                     limited_reader
                         .get_mut()
                         .get_mut()
@@ -217,18 +213,50 @@ pub fn run_server(
                 }
             };
 
-            let response = match request {
-                Request::Attest(q) => {
-                    slog::debug!(log, "qualifying data received: {q:?}");
-                    match rot.attest(&q) {
-                        Ok(a) => Response::Attest(a),
-                        Err(e) => Response::Error(e.to_string()),
+            let response = match conf.lock() {
+                // successfully got the lock
+                Ok(c) => match c.deref().as_ref() {
+                    // VmInstanceConf is ready / has been set
+                    Some(conf) => {
+                        let response = match request {
+                            Request::Attest(q) => {
+                                slog::debug!(
+                                    log,
+                                    "qualifying data received: {q:?}"
+                                );
+                                match rot.attest(conf, &q) {
+                                    Ok(a) => Response::Attest(a),
+                                    Err(e) => Response::Error(e.to_string()),
+                                }
+                            }
+                        };
+
+                        let mut response = serde_json::to_string(&response)?;
+                        response.push('\n');
+                        response
                     }
+                    // VmInstanceConf is not ready / has not been set
+                    None => {
+                        slog::info!(log, "VmInstanceConf not ready");
+                        let response = Response::Error(
+                            "VmInstanceConf not ready".to_string(),
+                        );
+                        let mut response = serde_json::to_string(&response)?;
+                        response.push('\n');
+                        response
+                    }
+                },
+                // error getting the lock
+                Err(_) => {
+                    // TODO: what is this?
+                    slog::warn!(log, "mutex poisoned");
+                    let response =
+                        Response::Error("Internal Error".to_string());
+                    let mut response = serde_json::to_string(&response)?;
+                    response.push('\n');
+                    response
                 }
             };
-
-            let mut response = serde_json::to_string(&response)?;
-            response.push('\n');
 
             slog::debug!(log, "sending response: {response}");
             limited_reader

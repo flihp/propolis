@@ -1548,21 +1548,103 @@ fn main() -> anyhow::Result<ExitCode> {
 
     // If configured, setup an attestation server
     if config.attestation.is_some() {
-        let backend_path =
-            attestation::get_path_for_block_device(&config, &log)
-                .context("get device to digest")?;
-        slog::info!(log, "boot_disk: {}", backend_path.display());
+        let uuid = uuid::Uuid::parse_str(
+            &config.attestation.as_ref().unwrap().instance_uuid,
+        )
+        .context("Parse UUID string")?;
 
-        // TODO: only calculate digest if mock value isn't present in cfg
-        let digest = attestation::calc_boot_digest(&backend_path, &log)
-            .context("calculating boot disk digest")?;
+        let vm_instance_conf: Option<vm_attest::VmInstanceConf> = None;
+        let vm_instance_conf = Arc::new(Mutex::new(vm_instance_conf));
+        let srv_vm_instance_conf = Arc::clone(&vm_instance_conf);
 
-        slog::info!(
+        if config.attestation.as_ref().unwrap().boot_digest.as_ref().is_some() {
+            let boot_digest = config
+                .attestation
+                .as_ref()
+                .unwrap()
+                .boot_digest
+                .as_ref()
+                .unwrap()
+                .parse()
+                .context("Measurement from config file")?;
+            match vm_instance_conf.lock() {
+                Ok(mut c) => {
+                    *c = Some(vm_attest::VmInstanceConf {
+                        uuid,
+                        boot_digest: Some(boot_digest),
+                    });
+                    slog::info!(
+                        log,
+                        "VmInstanceConf w/ boot_digest from config: {c:?}"
+                    );
+                }
+                Err(_) => todo!("lock poisoned"),
+            }
+        } else {
+            let path = attestation::get_path_for_boot_device(&config, &log)
+                .context("filed to get path for boot device")?;
+            match path {
+                Some(path) => {
+                    if !path.exists() {
+                        return Err(anyhow::anyhow!(
+                            "boot device file does not exist"
+                        ));
+                    }
+                    let cfg_log = log.clone();
+
+                    // boot disk digest calculation
+                    std::thread::spawn(move || {
+                        let log = cfg_log;
+                        let result =
+                            attestation::measure_boot_disk(&path, &log);
+                        match vm_instance_conf.lock() {
+                            Ok(mut c) => match result {
+                                Ok(boot_digest) => {
+                                    *c = Some(vm_attest::VmInstanceConf {
+                                        uuid,
+                                        boot_digest: Some(boot_digest),
+                                    });
+                                    slog::info!(log, "VmInstanceConf: {c:?}");
+                                }
+                                Err(e) => {
+                                    *c = Some(vm_attest::VmInstanceConf {
+                                        uuid,
+                                        boot_digest: None,
+                                    });
+                                    slog::error!(
+                                        log,
+                                        "error measuring boot disk: {e}"
+                                    );
+                                    slog::info!(
+                                        log,
+                                        "VmInstanceConf after error: {c:?}"
+                                    );
+                                }
+                            },
+                            Err(_) => todo!("lock poisoned"),
+                        }
+                    });
+                }
+                None => match vm_instance_conf.lock() {
+                    Ok(mut c) => {
+                        *c = Some(vm_attest::VmInstanceConf {
+                            uuid,
+                            boot_digest: None,
+                        });
+                        slog::info!(
+                            log,
+                            "VmInstanceConf no path for boot disk: {c:?}"
+                        );
+                    }
+                    Err(_) => todo!("lock poisoned"),
+                },
+            }
+        }
+        slog::debug!(
             log,
-            "booting disk image: {} w/ digest: {digest}",
-            backend_path.display()
+            "AttestationConfig: {:?}",
+            config.attestation.as_ref()
         );
-
         // search through devices for one bound to the vsock driver
         // NOTE: this will find the first such device, all others are ignored
         let (_, device) = config
@@ -1582,17 +1664,25 @@ fn main() -> anyhow::Result<ExitCode> {
             "bind address for attestation server: {attest_bind_addr}"
         );
 
-        let attest_log = log.clone();
-
         let rot_backend =
-            attestation::parse_cfg(config.attestation.as_ref().unwrap())
+            attestation::attest_from_cfg(config.attestation.as_ref().unwrap())
                 .context("create VmInstanceRot from cfg")?;
 
         let listener = TcpListener::bind(attest_bind_addr)
             .context("bind to could not bind to attesation port")?;
 
+        let attest_log = log.clone();
+
         std::thread::spawn(move || {
-            let _ = attestation::run_server(&attest_log, rot_backend, listener);
+            //let rot_backend = attestation::attest_from_cfg(&cfg_move)
+            //    .expect("create VmInstanceRot from cfg");
+
+            let _ = attestation::run_server(
+                &attest_log,
+                rot_backend,
+                listener,
+                srv_vm_instance_conf,
+            );
         });
     }
 
