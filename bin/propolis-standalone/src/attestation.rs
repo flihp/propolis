@@ -150,6 +150,97 @@ pub fn measure_boot_disk(
     Ok(Measurement::Sha256(digest.finalize().into()))
 }
 
+pub fn run_measure_boot_disk(
+    boot_disk: &PathBuf,
+    log: &slog::Logger,
+    uuid: uuid::Uuid,
+    vm_instance_conf: &Arc<Mutex<Option<VmInstanceConf>>>,
+) {
+    let result = measure_boot_disk(boot_disk, log);
+    match vm_instance_conf.lock() {
+        Ok(mut c) => match result {
+            Ok(boot_digest) => {
+                *c = Some(VmInstanceConf {
+                    uuid,
+                    boot_digest: Some(boot_digest),
+                });
+                slog::info!(log, "VmInstanceConf: {c:?}");
+            }
+            Err(e) => {
+                *c = Some(VmInstanceConf { uuid, boot_digest: None });
+                slog::error!(log, "error measuring boot disk: {e}");
+            }
+        },
+        Err(_) => todo!("lock poisoned"),
+    }
+}
+
+//
+pub fn populate_vm_instance_conf(
+    vm_instance_conf: &Arc<Mutex<Option<VmInstanceConf>>>,
+    config: &Config,
+    attest_cfg: &AttestationConfig,
+    log: &slog::Logger,
+) -> Result<()> {
+    let uuid = uuid::Uuid::parse_str(&attest_cfg.instance_uuid)
+        .context("Parse UUID string")?;
+
+    match vm_instance_conf.lock() {
+        Ok(mut c) => {
+            if let Some(ref boot_digest) = attest_cfg.boot_digest {
+                let boot_digest = boot_digest
+                    .parse()
+                    .context("Measurement from config file")?;
+                *c = Some(vm_attest::VmInstanceConf {
+                    uuid,
+                    boot_digest: Some(boot_digest),
+                });
+                slog::info!(
+                    log,
+                    "VmInstanceConf w/ boot_digest from config: {c:?}"
+                );
+            } else {
+                let path = get_path_for_boot_device(&config, &log)
+                    .context("filed to get path for boot device")?;
+                match path {
+                    Some(path) => {
+                        if !path.exists() {
+                            return Err(anyhow::anyhow!(
+                                "boot device file does not exist"
+                            ));
+                        }
+
+                        let log_measure = log.clone();
+                        // boot disk digest calculation
+                        let conf_lock = vm_instance_conf.clone();
+                        std::thread::spawn(move || {
+                            run_measure_boot_disk(
+                                &path,
+                                &log_measure,
+                                uuid,
+                                &conf_lock,
+                            );
+                        });
+                    }
+                    None => {
+                        *c = Some(vm_attest::VmInstanceConf {
+                            uuid,
+                            boot_digest: None,
+                        });
+                        slog::info!(
+                            log,
+                            "VmInstanceConf no path for boot disk: {c:?}"
+                        );
+                    }
+                }
+            }
+        }
+        Err(_) => todo!("lock poisoned"),
+    }
+
+    Ok(())
+}
+
 pub fn run_server(
     log: &slog::Logger,
     rot_backend: Box<dyn dice_verifier::Attest + Send>,

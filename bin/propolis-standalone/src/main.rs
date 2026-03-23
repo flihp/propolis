@@ -1548,89 +1548,16 @@ fn main() -> anyhow::Result<ExitCode> {
 
     // If configured, setup an attestation server
     if let Some(ref attest_cfg) = config.attestation {
-        let uuid = uuid::Uuid::parse_str(&attest_cfg.instance_uuid)
-            .context("Parse UUID string")?;
-
         let vm_instance_conf: Option<vm_attest::VmInstanceConf> = None;
         let vm_instance_conf = Arc::new(Mutex::new(vm_instance_conf));
-        let srv_vm_instance_conf = Arc::clone(&vm_instance_conf);
 
-        if let Some(ref boot_digest) = attest_cfg.boot_digest {
-            let boot_digest =
-                boot_digest.parse().context("Measurement from config file")?;
-            match vm_instance_conf.lock() {
-                Ok(mut c) => {
-                    *c = Some(vm_attest::VmInstanceConf {
-                        uuid,
-                        boot_digest: Some(boot_digest),
-                    });
-                    slog::info!(
-                        log,
-                        "VmInstanceConf w/ boot_digest from config: {c:?}"
-                    );
-                }
-                Err(_) => todo!("lock poisoned"),
-            }
-        } else {
-            let path = attestation::get_path_for_boot_device(&config, &log)
-                .context("filed to get path for boot device")?;
-            match path {
-                Some(path) => {
-                    if !path.exists() {
-                        return Err(anyhow::anyhow!(
-                            "boot device file does not exist"
-                        ));
-                    }
-                    let cfg_log = log.clone();
-
-                    // boot disk digest calculation
-                    std::thread::spawn(move || {
-                        let log = cfg_log;
-                        let result =
-                            attestation::measure_boot_disk(&path, &log);
-                        match vm_instance_conf.lock() {
-                            Ok(mut c) => match result {
-                                Ok(boot_digest) => {
-                                    *c = Some(vm_attest::VmInstanceConf {
-                                        uuid,
-                                        boot_digest: Some(boot_digest),
-                                    });
-                                    slog::info!(log, "VmInstanceConf: {c:?}");
-                                }
-                                Err(e) => {
-                                    *c = Some(vm_attest::VmInstanceConf {
-                                        uuid,
-                                        boot_digest: None,
-                                    });
-                                    slog::error!(
-                                        log,
-                                        "error measuring boot disk: {e}"
-                                    );
-                                    slog::info!(
-                                        log,
-                                        "VmInstanceConf after error: {c:?}"
-                                    );
-                                }
-                            },
-                            Err(_) => todo!("lock poisoned"),
-                        }
-                    });
-                }
-                None => match vm_instance_conf.lock() {
-                    Ok(mut c) => {
-                        *c = Some(vm_attest::VmInstanceConf {
-                            uuid,
-                            boot_digest: None,
-                        });
-                        slog::info!(
-                            log,
-                            "VmInstanceConf no path for boot disk: {c:?}"
-                        );
-                    }
-                    Err(_) => todo!("lock poisoned"),
-                },
-            }
-        }
+        attestation::populate_vm_instance_conf(
+            &vm_instance_conf,
+            &config,
+            &attest_cfg,
+            &log,
+        )
+        .context("populate VmInstanceConf from config")?;
         slog::debug!(
             log,
             "AttestationConfig: {:?}",
@@ -1672,7 +1599,7 @@ fn main() -> anyhow::Result<ExitCode> {
                 &attest_log,
                 rot_backend,
                 listener,
-                srv_vm_instance_conf,
+                vm_instance_conf,
             );
         });
     }
