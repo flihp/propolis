@@ -1547,26 +1547,17 @@ fn main() -> anyhow::Result<ExitCode> {
     let _rt_guard = rt.enter();
 
     // If configured, setup an attestation server
-    if config.attestation.is_some() {
-        let uuid = uuid::Uuid::parse_str(
-            &config.attestation.as_ref().unwrap().instance_uuid,
-        )
-        .context("Parse UUID string")?;
+    if let Some(ref attest_cfg) = config.attestation {
+        let uuid = uuid::Uuid::parse_str(&attest_cfg.instance_uuid)
+            .context("Parse UUID string")?;
 
         let vm_instance_conf: Option<vm_attest::VmInstanceConf> = None;
         let vm_instance_conf = Arc::new(Mutex::new(vm_instance_conf));
         let srv_vm_instance_conf = Arc::clone(&vm_instance_conf);
 
-        if config.attestation.as_ref().unwrap().boot_digest.as_ref().is_some() {
-            let boot_digest = config
-                .attestation
-                .as_ref()
-                .unwrap()
-                .boot_digest
-                .as_ref()
-                .unwrap()
-                .parse()
-                .context("Measurement from config file")?;
+        if let Some(ref boot_digest) = attest_cfg.boot_digest {
+            let boot_digest =
+                boot_digest.parse().context("Measurement from config file")?;
             match vm_instance_conf.lock() {
                 Ok(mut c) => {
                     *c = Some(vm_attest::VmInstanceConf {
