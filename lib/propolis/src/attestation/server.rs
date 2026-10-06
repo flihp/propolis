@@ -13,8 +13,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{oneshot, Mutex as TokioMutex};
 use tokio::task::JoinHandle;
 
-use dice_verifier::sled_agent::AttestSledAgent;
-use dice_verifier::Attest;
+use oxide_rot::sled_agent::AttestSledAgent;
+use oxide_rot::Attest;
 
 use vm_attest::VmInstanceConf;
 
