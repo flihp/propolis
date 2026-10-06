@@ -226,19 +226,15 @@ impl AttestationSock {
                 }
             };
 
-            let response = match request {
-                vm_attest::Request::Attest(q) => {
-                    slog::debug!(log, "qualifying data received: {q:?}");
+            let conf = {
+                let guard = vm_conf.lock().unwrap();
+                guard.to_owned()
+            };
 
-                    let conf = {
-                        let guard = vm_conf.lock().unwrap();
-                        guard.to_owned()
-                    };
-
-                    match conf {
-                        Some(conf) => {
-                            info!(log, "vm conf is ready = {:?}", conf);
-
+            let response = match conf {
+                Some(conf) => {
+                    match request {
+                        vm_attest::Request::Attest(q) => {
                             let rot_guard = rot.lock().await;
 
                             match rot_guard.attest(&conf, &q).await {
@@ -249,15 +245,19 @@ impl AttestationSock {
                             }
                         }
 
-                        // The VM conf isn't ready yet.
-                        None => {
-                            info!(log, "vm conf is NOT ready");
-                            let response = vm_attest::Response::Error(
-                                "VmInstanceConf not ready".to_string(),
-                            );
-                            response
+                        vm_attest::Request::Attest2(_) => {
+                            // TODO: call attest2 API in sled-agent that has
+                            // not yet been impl'd
+                            vm_attest::Response::Error("todo".to_string())
                         }
                     }
+                }
+                // The VM conf isn't ready yet
+                None => {
+                    info!(log, "vm conf is NOT ready");
+                    vm_attest::Response::Error(
+                        "VmInstanceConf not ready".to_string(),
+                    )
                 }
             };
 
